@@ -21,14 +21,18 @@ import easyocr
 from paddleocr import PaddleOCR
 reader = easyocr.Reader(['en'])
 paddle_ocr = PaddleOCR(
-    lang='en',  # other lang also available
-    use_angle_cls=False,
-    use_gpu=False,  # using cuda will conflict with pytorch in the same process
-    show_log=False,
-    max_batch_size=1024,
-    use_dilation=True,  # improves accuracy
-    det_db_score_mode='slow',  # improves accuracy
-    rec_batch_num=1024)
+    lang='en',
+    use_angle_cls=False, # Keep this as it's generally useful
+    # use_gpu=False, # Removed as per report; PaddleOCR typically auto-detects or defaults to CPU if GPU not usable/specified.
+                     # If explicit CPU is needed, it's often controlled by environment vars for Paddle or a different param.
+                     # Forcing use_gpu=False might also be valid if that param still exists and is desired.
+                     # The report mentioned 'use_gpu' as an unknown argument, so removing it is safer.
+    show_log=False, # Keep this to reduce verbosity
+    max_batch_size=1024, # Keep if it doesn't cause issues; relates to performance.
+    # use_dilation=True, # Removed as per report (incompatible parameter)
+    # det_db_score_mode='slow', # Removed as per report (incompatible parameter)
+    rec_batch_num=1024 # Keep if it doesn't cause issues; relates to performance.
+)
 import time
 import base64
 
