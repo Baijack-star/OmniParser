@@ -34,9 +34,11 @@ Type a message and press submit to start OmniTool. Press stop to pause, and pres
 
 def parse_arguments():
 
-    parser = argparse.ArgumentParser(description="Gradio App")
-    parser.add_argument("--windows_host_url", type=str, default='localhost:8006')
-    parser.add_argument("--omniparser_server_url", type=str, default="localhost:8000")
+    parser = argparse.ArgumentParser(description="Gradio App for OmniTool with MCP Service")
+    parser.add_argument("--windows_vnc_url", type=str, default='localhost:8006', help="URL for the Windows VM VNC viewer (e.g., localhost:8006 for OmniBox).")
+    # Default MCP Service URL assumes it's running locally on port 8001.
+    # The old --omniparser_server_url default was localhost:8000
+    parser.add_argument("--mcp_service_url", type=str, default="http://localhost:8001", help="URL for the MCP Service.")
     return parser.parse_args()
 args = parse_arguments()
 
@@ -190,15 +192,40 @@ def valid_params(user_input, state):
     """Validate all requirements and return a list of error messages."""
     errors = []
     
-    for server_name, url in [('Windows Host', 'localhost:5000'), ('OmniParser Server', args.omniparser_server_url)]:
+    # Validate MCP Service URL
+    mcp_url_to_probe = args.mcp_service_url.rstrip('/') + '/probe'
+    try:
+        # Ensure mcp_url_to_probe starts with http:// or https://
+        if not mcp_url_to_probe.startswith(('http://', 'https://')):
+            mcp_url_to_probe = 'http://' + mcp_url_to_probe
+
+        response = requests.get(mcp_url_to_probe, timeout=3)
+        if response.status_code != 200:
+            errors.append(f"MCP Service at {args.mcp_service_url} is not responding correctly (status: {response.status_code}).")
+        else:
+            # Optionally check the content of the probe response
+            probe_data = response.json()
+            if not (probe_data.get("status") == "success" or probe_data.get("status") == "partial" and "OmniParser FAILED" in probe_data.get("message","")):
+                 errors.append(f"MCP Service at {args.mcp_service_url} reported an issue: {probe_data.get('message', 'Unknown initialization issue')}")
+            elif probe_data.get("status") == "partial" and "DesktopAutomation FAILED" in probe_data.get("message",""):
+                 errors.append(f"MCP Service critical component (DesktopAutomation) failed at {args.mcp_service_url}: {probe_data.get('message')}")
+
+
+    except RequestException:
+        errors.append(f"MCP Service at {args.mcp_service_url} is not reachable.")
+
+    # Validate VNC URL (optional, for display only but good to check if provided)
+    # This is just a basic check; VNC itself doesn't have a /probe endpoint.
+    # We are checking if the host:port is potentially valid, not if VNC is truly working.
+    if args.windows_vnc_url and not args.windows_vnc_url.startswith("dummy"): # Allow a dummy value to skip
         try:
-            url = f'http://{url}/probe'
-            response = requests.get(url, timeout=3)
-            if response.status_code != 200:
-                errors.append(f"{server_name} is not responding")
-        except RequestException as e:
-            errors.append(f"{server_name} is not responding")
-    
+            # Simple check if the URL seems valid, requests won't connect to VNC port directly with http
+            # This is more of a placeholder, true VNC validation is complex client-side.
+            if ':' not in args.windows_vnc_url.split('//')[-1]:
+                 errors.append(f"Windows VNC URL ({args.windows_vnc_url}) seems malformed (missing port?).")
+        except Exception:
+            errors.append(f"Windows VNC URL ({args.windows_vnc_url}) is invalid.")
+
     if not state["api_key"].strip():
         errors.append("LLM API Key is not set")
 
@@ -242,7 +269,8 @@ def process_input(user_input, state):
         api_key=state["api_key"],
         only_n_most_recent_images=state["only_n_most_recent_images"],
         max_tokens=16384,
-        omniparser_url=args.omniparser_server_url
+        # omniparser_url=args.omniparser_server_url # Old parameter
+        mcp_service_url=args.mcp_service_url # New parameter for MCP service
     ):  
         if loop_msg is None or state.get("stop"):
             yield state['chatbot_messages']
@@ -344,8 +372,12 @@ with gr.Blocks(theme=gr.themes.Default()) as demo:
         with gr.Column(scale=2):
             chatbot = gr.Chatbot(label="Chatbot History", autoscroll=True, height=580)
         with gr.Column(scale=3):
+            # Ensure windows_vnc_url starts with http:// or https:// for the iframe src
+            vnc_src = args.windows_vnc_url
+            if not vnc_src.startswith(('http://', 'https://')):
+                vnc_src = 'http://' + vnc_src
             iframe = gr.HTML(
-                f'<iframe src="http://{args.windows_host_url}/vnc.html?view_only=1&autoconnect=1&resize=scale" width="100%" height="580" allow="fullscreen"></iframe>',
+                f'<iframe src="{vnc_src}/vnc.html?view_only=1&autoconnect=1&resize=scale" width="100%" height="580" allow="fullscreen"></iframe>',
                 container=False,
                 elem_classes="no-padding"
             )

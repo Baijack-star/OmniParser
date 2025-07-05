@@ -24,7 +24,21 @@ from anthropic.types.beta import (
 from anthropic.types import TextBlock
 from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock
 
-from tools import ComputerTool, ToolCollection, ToolResult
+# ComputerTool and ToolCollection are removed as part of the refactor.
+# The agent will interact with a new MCP service instead of directly using these tools.
+# from tools import ComputerTool, ToolCollection
+# ToolResult might still be needed if it's a generic class for tool outputs.
+# For now, let's assume it's available or will be handled.
+# Placeholder for ToolResult if it's not found elsewhere by the linter/compiler
+try:
+    from tools import ToolResult # If tools/__init__.py or tools/base.py defines it
+except ImportError:
+    print("Warning: ToolResult definition not found in anthropic_agent.py, using a placeholder. This might cause issues.")
+    class ToolResult: # Basic placeholder
+        def __init__(self, output=None, error=None, base64_image=None):
+            self.output = output
+            self.error = error
+            self.base64_image = base64_image
 
 from PIL import Image
 from io import BytesIO
@@ -62,7 +76,8 @@ class AnthropicActor:
         self.max_tokens = max_tokens
         self.only_n_most_recent_images = only_n_most_recent_images
         
-        self.tool_collection = ToolCollection(ComputerTool())
+        # self.tool_collection = ToolCollection(ComputerTool()) # Removed: Tools will be managed by the MCP service
+        self.tool_collection_params = [self.get_mcp_computer_tool_schema()]
 
         self.system = SYSTEM_PROMPT
         
@@ -95,8 +110,11 @@ class AnthropicActor:
             messages=messages,
             model=self.model,
             system=self.system,
-            tools=self.tool_collection.to_params(),
-            betas=["computer-use-2024-10-22"],
+            # tools=self.tool_collection.to_params(), # Tools will be handled differently via MCP service
+            tools=self.tool_collection_params, # Use the placeholder
+            betas=["computer-use-2024-10-22"], # This beta flag might relate to specific tool schemas.
+                                               # We'll need to ensure the MCP service provides tools in a compatible way,
+                                               # or this part of the API call might need to change.
         )
 
         self.api_response_callback(cast(APIResponse[BetaMessage], raw_response))
@@ -160,3 +178,72 @@ def _maybe_filter_to_n_most_recent_images(
                         continue
                 new_content.append(content)
             tool_result["content"] = new_content
+
+    def get_mcp_computer_tool_schema(self) -> Dict[str, Any]:
+        """
+        Returns the JSON schema for the 'computer' tool, reflecting MCP service capabilities.
+        This schema should align with what mcp_server.py's ExecuteActionRequest expects.
+        """
+        # Based on ActionParameter and ExecuteActionRequest in mcp_server.py
+        parameter_properties = {
+            "x": {"type": "integer", "description": "X-coordinate for mouse actions."},
+            "y": {"type": "integer", "description": "Y-coordinate for mouse actions."},
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "default": "left",
+                "description": "Mouse button to be used."
+            },
+            "clicks": {"type": "integer", "default": 1, "description": "Number of clicks."},
+            "interval": {"type": "number", "default": 0.0, "description": "Interval between clicks or for typing. Also used as duration for wait."},
+            "text": {"type": "string", "description": "Text to type."},
+            "key_name": {"type": "string", "description": "Name of the key to press (e.g., 'enter', 'ctrl+c')."},
+            "amount": {"type": "integer", "description": "Scroll amount (positive up, negative down)."},
+            "duration": {"type": "number", "default": 0.5, "description": "Duration for drag actions."},
+            "region": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Region for screenshot (left, top, width, height)."
+            },
+            "use_scaled_coords": {
+                "type": "boolean",
+                "default": False,
+                "description": "Whether x, y, region coordinates are in scaled space (normalized to a target resolution) rather than actual screen pixels."
+            },
+            "path": {"type": "string", "description": "File path to save a screenshot."}
+        }
+
+        action_types = [
+            "mouse_move", "click", "drag_to", "type_text", "press_key",
+            "key_down", "key_up", "scroll", "get_cursor_position",
+            "get_screen_dimensions", "take_screenshot", "wait"
+        ]
+
+        return {
+            "name": "computer",
+            "description": (
+                "Allows interaction with the computer's screen, mouse, and keyboard. "
+                "All coordinates (x, y, region) are assumed to be actual screen pixel values unless 'use_scaled_coords' is true. "
+                "If 'use_scaled_coords' is true, coordinates are relative to a scaled logical display area."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": action_types,
+                        "description": "The type of computer action to perform."
+                    },
+                    # Include all parameters from ActionParameter, making them optional
+                    # as specific actions only need a subset.
+                    # The 'required' field at the object level can list parameters
+                    # that are always required for any action, if any (e.g., 'action' itself).
+                    **parameter_properties
+                },
+                "required": ["action"] # Only 'action' is universally required for the tool call.
+                                       # Specific actions will have their own parameter requirements,
+                                       # handled by the MCP service.
+            }
+        }
