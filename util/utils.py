@@ -116,9 +116,38 @@ def get_parsed_content_icon(filtered_boxes, starting_idx, image_source, caption_
         else:
             inputs = processor(images=batch, text=[prompt]*len(batch), return_tensors="pt").to(device=device)
         if 'florence' in model.config.name_or_path:
-            generated_ids = model.generate(input_ids=inputs["input_ids"],pixel_values=inputs["pixel_values"],max_new_tokens=20,num_beams=1, do_sample=False)
+            # Add diagnostic check for the 'generate' method
+            if not hasattr(model, 'generate'):
+                error_msg = (
+                    f"The loaded Florence model (type: {type(model)}) does not have a 'generate' method. "
+                    "This is likely due to an incompatible 'transformers' library version or an issue with the model loading. "
+                    "Please ensure 'transformers' is compatible with 'microsoft/Florence-2-base'. "
+                    "Consider version 4.35.0 or similar known compatible versions."
+                )
+                print(f"[ERROR] util.utils.py: {error_msg}")
+                raise AttributeError(error_msg)
+
+            print(f"[DEBUG] util.utils.py: Calling Florence model.generate. Model type: {type(model)}, "
+                  f"input_ids shape: {inputs['input_ids'].shape}, pixel_values shape: {inputs['pixel_values'].shape if 'pixel_values' in inputs else 'N/A'}")
+
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=20,
+                num_beams=1,
+                do_sample=False
+            )
         else:
+            # Ensure non-Florence models also have generate or handle appropriately
+            if not hasattr(model, 'generate'):
+                error_msg = (
+                    f"The loaded model (type: {type(model)}, name: {model.config.name_or_path}) "
+                    "does not have a 'generate' method. Check model compatibility and 'transformers' version."
+                )
+                print(f"[ERROR] util.utils.py: {error_msg}")
+                raise AttributeError(error_msg)
             generated_ids = model.generate(**inputs, max_length=100, num_beams=5, no_repeat_ngram_size=2, early_stopping=True, num_return_sequences=1) # temperature=0.01, do_sample=True,
+
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)
         generated_text = [gen.strip() for gen in generated_text]
         generated_texts.extend(generated_text)
